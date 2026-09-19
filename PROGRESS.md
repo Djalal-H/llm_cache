@@ -15,7 +15,8 @@ phase in `PLAN.md`.
   prompt hashes, API health/metrics, seeded 1,000-request dataset, baseline replay/export,
   native vLLM launcher and Docker API packaging.
 - `src/cachewise/eligibility.py`: English FAQ intent rules and reviewed domain vocabulary with
-  conservative bypasses for personal requests, unknown/mixed wording, stock, and history.
+  conservative bypasses for personal requests, unknown/mixed wording, stock, and history. It now
+  marks a future TypeSafe AI Jev `Choice` integration seam; Jev is not installed or called.
 - `src/cachewise/assistant.py`: eligible FAQ prompts contain policies, tier, region and language,
   without customer identifiers, names or orders; this also applies with caching disabled.
 - `src/cachewise/cache.py` and `chat.py`: async Redis adapter and orchestration, complete prompt/model
@@ -35,6 +36,9 @@ phase in `PLAN.md`.
   utterance; unfamiliar vocabulary bypasses. English questions may request another response
   language. General personalized-product policy questions can qualify; actual personal requests
   always bypass and use current ownership-filtered fixtures.
+- A future Jev router should preserve the existing eligibility outcomes, accept only a
+  high-confidence `eligible` choice, and fail closed on low confidence or provider errors. Its
+  threshold must be tuned and held-out/adversarial false-cache behavior evaluated before rollout.
 - Normalize FAQ question whitespace and Unicode NFC only; preserve case, punctuation, numbers,
   and negation. Hash the actual normalized prompt, tier/region/language, generation endpoint,
   model/revision/settings, tool definitions (currently empty), fixture versions and Redis namespace.

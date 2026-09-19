@@ -1,4 +1,11 @@
-"""Conservative English FAQ routing; never use dataset labels at runtime."""
+"""Conservative FAQ routing; never use dataset labels at runtime.
+
+Future router option: TypeSafe AI's Jev model is a good fit for replacing the
+lexical classifier below. Jev accepts a state plus typed questions and returns
+structured decisions, probabilities, and confidence instead of generated text.
+See ``JEV_INTEGRATION`` below for the intended boundary. The current release
+does not call Jev and remains deterministic and dependency-free.
+"""
 
 import re
 import unicodedata
@@ -73,6 +80,26 @@ much amount take takes get explain tell list give please about does need shippin
 how paid allow allowed eligible eligibility options deadline returning purchase
 """.split()
 )
+
+
+# FUTURE(Jev): replace only the classification section of ``eligibility_reason``
+# with an injected async eligibility provider; keep normalization and the
+# cache-safety decision in application code. A Jev Choice question should use
+# the stable outcomes below so metrics and bypass behavior remain compatible:
+#
+#   eligible          shared returns/shipping/payment policy FAQ
+#   personalized      needs customer, order, payment, tracking, or refund data
+#   unsafe_or_live    live stock or instruction-manipulation request
+#   mixed_or_uncertain multiple intents, unsupported topic, or unclear wording
+#
+# Send the normalized question as ``state`` to ``jev-latest``. Only convert a
+# high-confidence ``eligible`` choice into cache eligibility; every other
+# choice, low-confidence result, timeout, invalid response, or provider failure
+# must fail closed to ``mixed_or_uncertain``. Before enabling it, freeze a
+# confidence threshold on the tuning split and validate false-cache decisions
+# on held-out/adversarial traffic. Do not silently fall back to the permissive
+# outcome. TypeSafe API: POST https://api.typesafe.ai/v1/systemone.
+JEV_INTEGRATION = "planned"
 
 
 def eligibility_reason(request: ChatRequest) -> str:
