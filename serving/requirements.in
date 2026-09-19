@@ -1,0 +1,2 @@
+# Intentionally isolated from the API environment.
+vllm==0.29.0

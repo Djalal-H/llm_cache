@@ -1,0 +1,39 @@
+{
+  "policy_version": 1,
+  "catalogue_version": 1,
+  "customers": [
+    {"id": "demo-alice", "name": "Alice", "tier": "standard", "region": "US"},
+    {"id": "demo-bob", "name": "Bob", "tier": "premium", "region": "US"},
+    {"id": "demo-claire", "name": "Claire", "tier": "standard", "region": "EU"},
+    {"id": "demo-dan", "name": "Dan", "tier": "premium", "region": "EU"}
+  ],
+  "orders": [
+    {"id": "CW-1001", "customer_id": "demo-alice", "item": "Blue canvas tote", "status": "shipped", "tracking": "FICTIONAL-A1001", "delivery_estimate": "2026-09-22", "refund_status": "none"},
+    {"id": "CW-1002", "customer_id": "demo-bob", "item": "Desk lamp", "status": "processing", "tracking": null, "delivery_estimate": "2026-09-24", "refund_status": "none"},
+    {"id": "CW-1003", "customer_id": "demo-claire", "item": "Notebook", "status": "delivered", "tracking": "FICTIONAL-C1003", "delivery_estimate": "2026-09-14", "refund_status": "pending"},
+    {"id": "CW-1004", "customer_id": "demo-dan", "item": "Travel mug", "status": "cancelled", "tracking": null, "delivery_estimate": null, "refund_status": "completed"}
+  ],
+  "policies": {
+    "returns": {
+      "standard_window_days": 30,
+      "premium_window_days": 60,
+      "window_unit": "calendar days",
+      "window_starts_at": "delivery",
+      "condition": "Unused items in original packaging; personalized items are not returnable unless defective.",
+      "US": "Return labels cost $5, except for defective items where they are free.",
+      "EU": "Return labels are free."
+    },
+    "shipping": {
+      "US": {"duration_business_days": [3, 5], "fee": 5, "currency": "USD", "free_shipping_minimum": 50},
+      "EU": {"duration_business_days": [5, 8], "fee": 7, "currency": "EUR", "free_shipping_minimum": 70},
+      "premium": "Premium customers receive free standard shipping with no minimum in their region.",
+      "destinations": ["US", "EU"],
+      "international": "Shipping outside the US and EU is unavailable."
+    },
+    "payment": {
+      "methods": ["Visa", "Mastercard", "PayPal"],
+      "excluded": ["cash on delivery", "cryptocurrency", "bank transfer"]
+    },
+    "stock": "Inventory status is unknown because no live stock data is connected."
+  }
+}
