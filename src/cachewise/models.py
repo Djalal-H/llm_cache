@@ -54,7 +54,10 @@ class JudgeResult(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     request_id: str
-    cache_outcome: Literal["bypass", "miss", "exact_hit"] = "bypass"
+    embedding_usage: Usage | None = None
+    semantic_similarity: float | None = None
+    semantic_source_identity: str | None = None
+    cache_outcome: Literal["bypass", "miss", "exact_hit", "semantic_hit"] = "bypass"
     usage: Usage
     model: str | None
     finish_reason: str | None

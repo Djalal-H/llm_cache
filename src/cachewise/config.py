@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     generation_base_url: str = "http://127.0.0.1:8001/v1"
     generation_model: str = "cachewise-model"
     generation_model_revision: str | None = None
-    cache_mode: Literal["disabled", "exact"] = "disabled"
+    cache_mode: Literal["disabled", "exact", "semantic"] = "disabled"
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
     cache_ttl_seconds: int = 86400
     cache_timeout_seconds: float = 1
@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     max_tokens: int = 256
     embedding_base_url: str | None = None
     embedding_model: str | None = None
+    embedding_dimension: int | None = None
+    embedding_model_revision: str | None = None
+    semantic_threshold: float | None = None
     embedding_api_key: SecretStr = SecretStr("")
     embedding_timeout_seconds: float = 30
     judge_base_url: str | None = None
@@ -38,6 +41,7 @@ class Settings(BaseSettings):
         "judge_base_url",
         "judge_model",
         "generation_model_revision",
+        "embedding_model_revision",
     )
     @classmethod
     def blank_optional(cls, value: str | None) -> str | None:
@@ -68,6 +72,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":
+        if self.embedding_dimension is not None and not 1 <= self.embedding_dimension <= 65536:
+            raise ValueError("embedding dimension must be in [1, 65536]")
+        if self.semantic_threshold is not None and not 0.80 <= self.semantic_threshold <= 0.99:
+            raise ValueError("semantic threshold must be in [0.80, 0.99]")
+        if self.cache_mode == "semantic" and (
+            not self.embedding_base_url
+            or not self.embedding_model
+            or self.embedding_dimension is None
+            or self.semantic_threshold is None
+        ):
+            raise ValueError(
+                "semantic mode requires embedding endpoint, model, dimension and threshold"
+            )
         if not 1 <= self.cache_ttl_seconds <= 604800:
             raise ValueError("cache TTL must be between one second and seven days")
         if not 0 < self.cache_timeout_seconds <= 10:
@@ -107,6 +124,9 @@ class Settings(BaseSettings):
             "cache_timeout_seconds": self.cache_timeout_seconds,
             "generation_model_revision": self.generation_model_revision,
             "embedding_model": self.embedding_model,
+            "embedding_model_revision": self.embedding_model_revision,
+            "embedding_dimension": self.embedding_dimension,
+            "semantic_threshold": self.semantic_threshold,
             "judge_model": self.judge_model,
             "generation_dollar_estimate": None,
             "generation_cost_assumption": "No self-hosted serving-cost model configured",

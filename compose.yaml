@@ -17,6 +17,22 @@ services:
       timeout: 15s
       retries: 3
       start_period: 60s
+  dashboard:
+    build:
+      context: .
+      network: host
+    network_mode: host
+    environment:
+      CACHEWISE_DASHBOARD_API_URL: ${CACHEWISE_DASHBOARD_API_URL:-http://127.0.0.1:8000}
+      CACHEWISE_DASHBOARD_ARTIFACTS_DIR: /app/artifacts
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    command: ["streamlit", "run", "src/cachewise/dashboard.py", "--server.address=127.0.0.1", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
   redis:
     image: redis:8.2-alpine
     ports:

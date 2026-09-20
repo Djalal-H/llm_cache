@@ -13,6 +13,7 @@ dependencies = [
   "redis>=5.2,<9",
   "pydantic-settings>=2.8,<3",
   "uvicorn>=0.34,<1",
+  "streamlit>=1.45,<2",
 ]
 
 [project.scripts]

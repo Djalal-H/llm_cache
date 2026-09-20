@@ -9,8 +9,10 @@ from pathlib import Path
 
 import httpx
 
+from cachewise.assistant import Assistant
 from cachewise.config import Settings
 from cachewise.dataset import DatasetRequest, dataset_hash
+from cachewise.fixtures import FixtureService
 from cachewise.metrics import percentile
 from cachewise.models import ChatResponse, Usage
 
@@ -37,7 +39,7 @@ async def engine_snapshot(client: httpx.AsyncClient, url: str, path: Path) -> di
         return {"availability": "unavailable", "scope": "aggregate engine", "prefix_series": []}
 
 
-def summarize(results: list[dict]) -> dict:
+def summarize(results: list[dict], cache_mode: str = "disabled") -> dict:
     successes = [row for row in results if row["status"] == "success"]
     usage = {}
     observations = {}
@@ -60,10 +62,21 @@ def summarize(results: list[dict]) -> dict:
         "success_p50_latency_ms": percentile(success_latencies, 0.5),
         "success_p95_latency_ms": percentile(success_latencies, 0.95),
         "truncated_answers": sum(row["response"]["finish_reason"] == "length" for row in successes),
-        "application_cache": "disabled",
-        "exact_hits": 0,
-        "semantic_hits": 0,
-        "avoided_generation_calls": 0,
+        "application_cache": cache_mode,
+        "exact_hits": sum(r["response"]["cache_outcome"] == "exact_hit" for r in successes),
+        "semantic_hits": sum(r["response"]["cache_outcome"] == "semantic_hit" for r in successes),
+        "avoided_generation_calls": sum(
+            r["response"]["cache_outcome"] in {"exact_hit", "semantic_hit"} for r in successes
+        ),
+        "embedding_total_tokens": sum(
+            (r["response"].get("embedding_usage") or {}).get("total_tokens") or 0 for r in successes
+        )
+        if all(
+            r["response"].get("embedding_usage") is None
+            or r["response"]["embedding_usage"].get("total_tokens") is not None
+            for r in successes
+        )
+        else None,
         "generation_dollar_estimate": None,
         **usage,
         **observations,
@@ -78,6 +91,7 @@ async def run_replay(
     warmup_count: int = 2,
     serving_metadata: dict | None = None,
     client: httpx.AsyncClient | None = None,
+    allow_cache: bool = False,
 ) -> dict:
     if not rows:
         raise ValueError("replay needs at least one request")
@@ -88,12 +102,16 @@ async def run_replay(
     if client is None:
         async with httpx.AsyncClient(timeout=settings.generation_timeout_seconds + 15) as owned:
             return await _replay(
-                rows, output, settings, api_url, warmup_count, serving_metadata, owned
+                rows, output, settings, api_url, warmup_count, serving_metadata, owned, allow_cache
             )
-    return await _replay(rows, output, settings, api_url, warmup_count, serving_metadata, client)
+    return await _replay(
+        rows, output, settings, api_url, warmup_count, serving_metadata, client, allow_cache
+    )
 
 
-async def _replay(rows, output, settings, api_url, warmup_count, serving_metadata, client):
+async def _replay(
+    rows, output, settings, api_url, warmup_count, serving_metadata, client, allow_cache
+):
     api_url = api_url.rstrip("/")
     manifest = {
         "started_at": datetime.now(UTC).isoformat(),
@@ -111,9 +129,12 @@ async def _replay(rows, output, settings, api_url, warmup_count, serving_metadat
         "warmup_count": warmup_count,
         "warmup_included_in_measurements": False,
         "prefix_cache_reset": "not performed; start a fresh vLLM server before this run",
-        "interpretation": "uncached baseline only; no latency or savings comparison yet",
+        "interpretation": (
+            "single configuration; comparisons require identical traffic and serving state"
+        ),
+        "application_cache_reset": "not applicable",
         "judge_cost": None,
-        "embedding_cost": 0,
+        "embedding_cost": 0 if settings.cache_mode != "semantic" else None,
         "generation_dollar_estimate": None,
         "infrastructure_costs": "unavailable; no serving-cost model configured",
     }
@@ -123,7 +144,7 @@ async def _replay(rows, output, settings, api_url, warmup_count, serving_metadat
 
     save_manifest()
     try:
-        if settings.cache_mode != "disabled":
+        if not allow_cache and settings.cache_mode != "disabled":
             raise ValueError("baseline replay requires CACHEWISE_CACHE_MODE=disabled")
         health = await client.get(f"{api_url}/health", timeout=10)
         manifest["health"] = health.json()
@@ -134,13 +155,23 @@ async def _replay(rows, output, settings, api_url, warmup_count, serving_metadat
         metrics.raise_for_status()
         manifest["api_metrics_preflight"] = metrics.json()
         actual_config = manifest["api_metrics_preflight"].get("configuration")
-        if (actual_config or {}).get("application_cache") != "disabled":
+        if not allow_cache and (actual_config or {}).get("application_cache") != "disabled":
             raise ValueError("baseline replay requires application caching disabled on the API")
         if actual_config != settings.public_config():
             raise ValueError("runner and API generation configuration do not match")
         actual_model = manifest["health"].get("generation_model")
         if actual_model != settings.generation_model:
             raise ValueError("runner and API generation models do not match")
+        if settings.cache_mode != "disabled":
+            if not settings.admin_token.get_secret_value():
+                raise ValueError("cache evaluation requires an admin token for namespace reset")
+            if manifest["health"].get("response_cache") != "ready":
+                raise ValueError("response cache is not ready")
+            if (
+                settings.cache_mode == "semantic"
+                and manifest["health"].get("semantic_cache") != "ready"
+            ):
+                raise ValueError("semantic cache is not ready")
         # Warm up using the first requests, with every warm-up outcome preserved separately.
         with (output / "warmup.jsonl").open("w") as stream:
             for index in range(warmup_count):
@@ -155,6 +186,14 @@ async def _replay(rows, output, settings, api_url, warmup_count, serving_metadat
                 ChatResponse.model_validate(response.json())
         metrics = await client.get(f"{api_url}/metrics", timeout=10)
         metrics.raise_for_status()
+        if settings.cache_mode != "disabled":
+            reset = await client.post(
+                f"{api_url}/admin/invalidate",
+                json={"scope": "all"},
+                headers={"Authorization": f"Bearer {settings.admin_token.get_secret_value()}"},
+            )
+            reset.raise_for_status()
+            manifest["application_cache_reset"] = reset.json()
         manifest["api_metrics_before"] = metrics.json()
     except (httpx.HTTPError, ValueError) as exc:
         manifest["status"] = "preflight_failed"
@@ -167,6 +206,7 @@ async def _replay(rows, output, settings, api_url, warmup_count, serving_metadat
     )
     save_manifest()
     results = []
+    assistant = Assistant(FixtureService(settings.fixture_path), None)
     with (output / "requests.jsonl").open("w", encoding="utf-8") as stream:
         for index, row in enumerate(rows):
             record = {
@@ -177,14 +217,22 @@ async def _replay(rows, output, settings, api_url, warmup_count, serving_metadat
                 "error": None,
                 "started_at": datetime.now(UTC).isoformat(),
             }
+            prepared = assistant.prepare(row.request)
+            record["judge_requirements"] = {
+                "expected_answer": row.answer_requirements,
+                "context_messages": [m.model_dump() for m in prepared.messages[:-1]],
+            }
             started = time.perf_counter()
             try:
                 response = await client.post(f"{api_url}/chat", json=row.request.model_dump())
                 record["http_status"] = response.status_code
                 if response.is_success:
                     parsed = ChatResponse.model_validate(response.json())
-                    if parsed.cache_outcome != "bypass":
+                    if not allow_cache and parsed.cache_outcome != "bypass":
                         raise ValueError("baseline requires application caching disabled")
+                    record["judge_context_verified"] = (
+                        parsed.serialized_prompt_hash == prepared.serialized_prompt_hash
+                    )
                     record["response"] = parsed.model_dump()
                     record["status"] = "success"
                 else:
@@ -203,7 +251,7 @@ async def _replay(rows, output, settings, api_url, warmup_count, serving_metadat
             if (index + 1) % 25 == 0 or index + 1 == len(rows):
                 print(f"Replayed {index + 1}/{len(rows)} requests", flush=True)
 
-    aggregate = summarize(results)
+    aggregate = summarize(results, settings.cache_mode)
     manifest["engine_after"] = await engine_snapshot(
         client, settings.vllm_metrics_url, output / "engine-after.prom"
     )

@@ -17,12 +17,14 @@ from cachewise.fixtures import FixtureService
 from cachewise.metrics import Metrics
 from cachewise.models import ChatRequest, ChatResponse, InvalidateRequest
 from cachewise.providers import (
+    EmbeddingProvider,
     GenerationProvider,
     OpenAIEmbedding,
     OpenAIGeneration,
     OpenAIJudge,
     ProviderError,
 )
+from cachewise.semantic import RedisSemanticCache, SemanticCache
 
 
 def get_assistant(request: Request) -> Assistant:
@@ -33,6 +35,8 @@ def create_app(
     settings: Settings | None = None,
     generation: GenerationProvider | None = None,
     cache: ExactCache | None = None,
+    embedding: EmbeddingProvider | None = None,
+    semantic: SemanticCache | None = None,
 ) -> FastAPI:
     config = settings or Settings()
     fixtures = FixtureService(config.fixture_path)
@@ -53,13 +57,12 @@ def create_app(
             )
             app.state.assistant = Assistant(fixtures, provider)
             active_cache = cache
-            if active_cache is None and config.cache_mode == "exact":
+            if active_cache is None and config.cache_mode != "disabled":
                 active_cache = RedisExactCache(
                     config.redis_url.get_secret_value(), config.cache_timeout_seconds
                 )
             app.state.cache = active_cache
-            app.state.chat_service = ChatService(app.state.assistant, config, active_cache, metrics)
-            app.state.embedding = (
+            app.state.embedding = embedding or (
                 OpenAIEmbedding(
                     client,
                     config.embedding_base_url,
@@ -69,6 +72,20 @@ def create_app(
                 )
                 if config.embedding_base_url
                 else None
+            )
+            active_semantic = semantic
+            if active_semantic is None and config.cache_mode == "semantic":
+                if not isinstance(active_cache, RedisExactCache):
+                    raise ValueError("custom exact cache requires an injected semantic cache")
+                active_semantic = RedisSemanticCache(active_cache, config)
+            app.state.semantic = active_semantic
+            app.state.chat_service = ChatService(
+                app.state.assistant,
+                config,
+                active_cache,
+                metrics,
+                app.state.embedding,
+                active_semantic,
             )
             app.state.judge = (
                 OpenAIJudge(
@@ -163,7 +180,7 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         active_cache = request.app.state.cache
-        if config.cache_mode != "exact" or active_cache is None:
+        if config.cache_mode == "disabled" or active_cache is None:
             return JSONResponse(status_code=503, content={"error": "cache_disabled"})
         try:
             namespace = await active_cache.invalidate(body.scope)
@@ -187,6 +204,13 @@ def create_app(
                 "generation_provider": "ready" if ready else "unavailable",
                 "fixtures": "ready" if fixture_ready else "unavailable",
                 "generation_model": config.generation_model,
+                "semantic_cache": (
+                    "disabled"
+                    if config.cache_mode != "semantic"
+                    else "ready"
+                    if await app.state.semantic.ready()
+                    else "unavailable"
+                ),
                 "response_cache": (
                     "disabled"
                     if config.cache_mode == "disabled"
@@ -210,7 +234,7 @@ def create_app(
         except (OSError, ValueError):
             result["active_versions"] = None
         result["cache_namespace"] = None
-        if config.cache_mode == "exact" and app.state.cache is not None:
+        if config.cache_mode != "disabled" and app.state.cache is not None:
             try:
                 result["cache_namespace"] = (await app.state.cache.namespace()).model_dump()
             except CacheError:

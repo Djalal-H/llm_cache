@@ -120,3 +120,90 @@ async def test_real_redis_api_miss_hit_invalidate_miss(redis_cache, generation):
             metrics = (await client.get("/metrics")).json()
             assert metrics["generation_calls"] == 2
             assert metrics["avoided_generation_calls"] == 1
+
+
+async def test_real_vectors_filter_threshold_expiry_and_first_writer(redis_cache):
+    from test_semantic import config
+
+    from cachewise.semantic import RedisSemanticCache, vector_bytes
+
+    semantic = RedisSemanticCache(redis_cache, config())
+    ctx, other = "a" * 64, "b" * 64
+    vector = vector_bytes([1, 0], 2)
+    try:
+        assert await semantic.ready()
+        await semantic.put(other, vector, entry("wrong-context"), 30)
+        assert await semantic.search(ctx, vector, 0.95) is None
+        cached = entry("vector", ttl=2)
+        await semantic.put(ctx, vector, cached, 30)
+        key = semantic.prefix + "entry:vector"
+        before = await redis_cache.client.pttl(key)
+        hit = await semantic.search(ctx, vector, 0.95)
+        assert hit.answer == cached.answer and hit.similarity == 1
+        assert await semantic.search(ctx, vector_bytes([0, 1], 2), 0.95) is None
+        await semantic.put(ctx, vector, entry("vector", ttl=60), 60)
+        assert await redis_cache.client.pttl(key) <= before
+        # Simulate index metadata outliving the payload's logical expiry.
+        expired = entry("vector", ttl=-1)
+        await redis_cache.client.hset(key, "entry", expired.model_dump_json())
+        assert await semantic.search(ctx, vector, 0.95) is None
+        await redis_cache.client.hset(key, "entry", "invalid json")
+        with pytest.raises(CacheError):
+            await semantic.search(ctx, vector, 0.95)
+        await asyncio.sleep(2.05)
+        assert not await redis_cache.client.exists(key)
+        assert await semantic.search(ctx, vector, 0.95) is None
+    finally:
+        await redis_cache.client.execute_command("FT.DROPINDEX", semantic.index)
+
+
+async def test_real_semantic_api_sequence_and_namespace(redis_cache, generation):
+    import httpx
+    from test_semantic import Embeddings, config
+
+    from cachewise.api import create_app
+    from cachewise.semantic import RedisSemanticCache
+
+    settings = config(admin_token="test-only")
+    vectors = RedisSemanticCache(redis_cache, settings)
+    embeddings = Embeddings()
+    app = create_app(settings, generation, redis_cache, embeddings, vectors)
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+
+                async def ask(text, **kwargs):
+                    response = await client.post(
+                        "/chat", json={"customer_id": "demo-alice", "question": text, **kwargs}
+                    )
+                    assert response.status_code == 200, response.text
+                    return response.json()
+
+                first = await ask("How much does shipping cost?")
+                assert first["cache_outcome"] == "miss"
+                assert (await ask("How much does shipping cost?"))["cache_outcome"] == "exact_hit"
+                semantic = await ask("What does shipping cost?")
+                assert semantic["cache_outcome"] == "semantic_hit"
+                assert semantic["embedding_usage"]["total_tokens"] == 5
+                assert (await ask("What does shipping cost?", language="fr"))[
+                    "cache_outcome"
+                ] == "miss"
+                for scope in ("policy", "catalogue"):
+                    response = await client.post(
+                        "/admin/invalidate",
+                        json={"scope": scope},
+                        headers={"Authorization": "Bearer test-only"},
+                    )
+                    assert response.status_code == 200
+                    assert (await ask("What does shipping cost?"))["cache_outcome"] == "miss"
+                health = (await client.get("/health")).json()
+                assert health["semantic_cache"] == "ready"
+                metrics = (await client.get("/metrics")).json()
+                assert metrics["semantic_hits"] == 1
+                assert metrics["exact_hits"] == 1
+                assert metrics["cache_errors"] == 0
+                assert metrics["cache_namespace"] is not None
+    finally:
+        await redis_cache.client.execute_command("FT.DROPINDEX", vectors.index)

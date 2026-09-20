@@ -16,6 +16,12 @@ def percentile(values: list[float], quantile: float) -> float | None:
 class Metrics:
     def __init__(self, cache_mode: str = "disabled"):
         self.cache_mode = cache_mode
+        self.semantic_hits = 0
+        self.embedding_calls = 0
+        self.embedding_errors = 0
+        self.embedding_successes = 0
+        self.embedding_tokens = 0
+        self.embedding_observations = 0
         self.exact_hits = 0
         self.cache_misses = 0
         self.cache_errors = 0
@@ -35,6 +41,12 @@ class Metrics:
                 self.known_usage[field] += value
                 self.usage_observations[field] += 1
 
+    def record_embedding(self, usage: Usage) -> None:
+        self.embedding_successes += 1
+        if usage.total_tokens is not None:
+            self.embedding_tokens += usage.total_tokens
+            self.embedding_observations += 1
+
     def snapshot(self) -> dict:
         values = list(self.latencies)
         return {
@@ -44,10 +56,20 @@ class Metrics:
             "generation_successes": self.generation_successes,
             "application_cache": self.cache_mode,
             "exact_hits": self.exact_hits,
+            "semantic_hits": self.semantic_hits,
+            "embedding_calls": self.embedding_calls,
+            "embedding_errors": self.embedding_errors,
+            "embedding_usage": {
+                "known_total_tokens": self.embedding_tokens
+                if self.embedding_observations
+                else None,
+                "observed_requests": self.embedding_observations,
+                "unavailable_requests": self.embedding_successes - self.embedding_observations,
+            },
             "cache_misses": self.cache_misses,
             "cache_errors": self.cache_errors,
             "bypasses": dict(self.bypasses),
-            "avoided_generation_calls": self.exact_hits,
+            "avoided_generation_calls": self.exact_hits + self.semantic_hits,
             "usage": {
                 field: {
                     "known_total": total if self.usage_observations[field] else None,

@@ -79,6 +79,7 @@ class RedisExactCache:
         self.client = Redis.from_url(
             url,
             decode_responses=True,
+            protocol=2,  # Keep FT.SEARCH wire responses stable across redis-py versions.
             socket_timeout=timeout,
             socket_connect_timeout=timeout,
             retry=Retry(NoBackoff(), 0),

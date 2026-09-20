@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 
 from cachewise.config import Settings
 from cachewise.dataset import read_dataset, write_dataset
+from cachewise.evaluation import compare_replays, judge_replay
 from cachewise.replay import run_replay
 
 
@@ -15,7 +16,7 @@ def main():
     dataset = commands.add_parser("dataset", help="Write the seeded 1,000-request dataset")
     dataset.add_argument("--output", type=Path, default=Path("artifacts/dataset.jsonl"))
     dataset.add_argument("--seed", type=int, default=42)
-    replay = commands.add_parser("replay", help="Run a live sequential uncached baseline")
+    replay = commands.add_parser("replay", help="Run live sequential replay (baseline by default)")
     replay.add_argument("--dataset", type=Path, default=Path("artifacts/dataset.jsonl"))
     replay.add_argument("--output", type=Path, required=True)
     replay.add_argument("--api-url", default="http://127.0.0.1:8000")
@@ -23,7 +24,25 @@ def main():
     replay.add_argument("--split", choices=["tuning", "evaluation", "all"], default="all")
     replay.add_argument("--warmup-count", type=int, default=2)
     replay.add_argument("--serving-metadata", type=Path)
+    replay.add_argument(
+        "--allow-cache",
+        action="store_true",
+        help="Evaluate configured cache mode; invalidates cache after warm-up",
+    )
+    judge = commands.add_parser("judge-replay", help="Judge every saved semantic hit")
+    judge.add_argument("--run", type=Path, required=True)
+    judge.add_argument("--output", type=Path, required=True)
+    compare = commands.add_parser("compare", help="Compare three completed replay directories")
+    compare.add_argument("--runs", type=Path, nargs=3, required=True)
+    compare.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.command == "judge-replay":
+        result = asyncio.run(judge_replay(args.run, args.output, Settings()))
+        print(json.dumps(result, indent=2))
+        return
+    if args.command == "compare":
+        print(json.dumps(compare_replays(args.runs, args.output), indent=2))
+        return
     if args.command == "dataset":
         rows = write_dataset(args.output, args.seed)
         print(f"Wrote {len(rows)} requests to {args.output}")
@@ -54,6 +73,7 @@ def main():
             args.api_url,
             args.warmup_count,
             metadata,
+            allow_cache=args.allow_cache,
         )
     )
     print(json.dumps(aggregate, indent=2))
