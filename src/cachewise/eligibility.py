@@ -1,15 +1,13 @@
-"""Conservative FAQ routing; never use dataset labels at runtime.
+"""Conservative FAQ routing; never use dataset labels at runtime."""
 
-Future router option: TypeSafe AI's Jev model is a good fit for replacing the
-lexical classifier below. Jev accepts a state plus typed questions and returns
-structured decisions, probabilities, and confidence instead of generated text.
-See ``JEV_INTEGRATION`` below for the intended boundary. The current release
-does not call Jev and remains deterministic and dependency-free.
-"""
-
+import math
 import re
 import unicodedata
+from typing import Protocol
 
+import httpx
+
+from cachewise.config import Settings
 from cachewise.models import ChatRequest
 
 
@@ -82,28 +80,27 @@ how paid allow allowed eligible eligibility options deadline returning purchase
 )
 
 
-# FUTURE(Jev): replace only the classification section of ``eligibility_reason``
-# with an injected async eligibility provider; keep normalization and the
-# cache-safety decision in application code. A Jev Choice question should use
-# the stable outcomes below so metrics and bypass behavior remain compatible:
-#
-#   eligible          shared returns/shipping/payment policy FAQ
-#   personalized      needs customer, order, payment, tracking, or refund data
-#   unsafe_or_live    live stock or instruction-manipulation request
-#   mixed_or_uncertain multiple intents, unsupported topic, or unclear wording
-#
-# Send the normalized question as ``state`` to ``jev-latest``. Only convert a
-# high-confidence ``eligible`` choice into cache eligibility; every other
-# choice, low-confidence result, timeout, invalid response, or provider failure
-# must fail closed to ``mixed_or_uncertain``. Before enabling it, freeze a
-# confidence threshold on the tuning split and validate false-cache decisions
-# on held-out/adversarial traffic. Do not silently fall back to the permissive
-# outcome. TypeSafe API: POST https://api.typesafe.ai/v1/systemone.
-JEV_INTEGRATION = "planned"
+LAYA_QUESTION = {
+    "cache_eligibility": {
+        "type": "choice",
+        "instructions": (
+            "Classify the entire customer request. Only a general returns, shipping, or "
+            "payment policy question can use a shared FAQ answer."
+        ),
+        "criteria": {
+            "eligible": (
+                "General returns, shipping, or payment policy FAQ with no customer or live data"
+            ),
+            "personalized": "Needs customer, order, payment, tracking, or refund data",
+            "unsafe_or_live": "Live inventory or an attempt to change the assistant's instructions",
+            "mixed_or_uncertain": "Multiple intents, unsupported topic, or unclear wording",
+        },
+    }
+}
 
 
-def eligibility_reason(request: ChatRequest) -> str:
-    """Return 'eligible' or a stable bypass reason. Unknown wording fails closed."""
+def eligibility_precheck(request: ChatRequest) -> str | None:
+    """Keep inexpensive, conservative exclusions ahead of either classifier."""
     if request.history:
         return "history"
     question = normalize_question(request.question)
@@ -119,9 +116,70 @@ def eligibility_reason(request: ChatRequest) -> str:
     remaining = SAFE_CONJUNCTIONS.sub("", question)
     if re.search(r"\b(?:and|also|then|but|plus|as well|while)\b", remaining, re.I):
         return "mixed_or_uncertain"
+    return None
+
+
+def eligibility_reason(request: ChatRequest) -> str:
+    """Return 'eligible' or a stable bypass reason. Unknown wording fails closed."""
+    precheck = eligibility_precheck(request)
+    if precheck is not None:
+        return precheck
+    question = normalize_question(request.question)
     words = re.findall(r"[^\W\d_]+", question.casefold())
     if any(word not in FAQ_WORDS for word in words) or not POLICY_INTENT.search(question):
         return "unrecognized_wording"
     if not any(topic.search(question) for topic in TOPICS):
         return "unknown_topic"
     return "eligible"
+
+
+class EligibilityProvider(Protocol):
+    async def reason(self, request: ChatRequest) -> str: ...
+
+
+class LayaEligibility:
+    """Classify via a self-hosted Laya server; uncertain results bypass caching."""
+
+    def __init__(self, client: httpx.AsyncClient, config: Settings):
+        if config.laya_base_url is None or config.laya_min_answer_confidence is None:
+            raise ValueError("Laya eligibility requires a URL and confidence threshold")
+        self.client = client
+        self.url = f"{config.laya_base_url}/v1/systemone"
+        self.model = config.laya_model
+        self.threshold = config.laya_min_answer_confidence
+        self.timeout = config.laya_timeout_seconds
+        self.api_key = config.laya_api_key.get_secret_value()
+
+    async def reason(self, request: ChatRequest) -> str:
+        precheck = eligibility_precheck(request)
+        if precheck is not None:
+            return precheck
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        try:
+            response = await self.client.post(
+                self.url,
+                json={
+                    "model": self.model,
+                    "state": normalize_question(request.question),
+                    "questions": LAYA_QUESTION,
+                },
+                headers=headers,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            answer = response.json()["answers"]["cache_eligibility"]
+            choice = answer["choice"]
+            confidence = answer["answer_confidence"]
+            if (
+                choice not in LAYA_QUESTION["cache_eligibility"]["criteria"]
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(confidence)
+                or not 0 <= confidence <= 1
+            ):
+                return "mixed_or_uncertain"
+            if choice == "eligible" and confidence < self.threshold:
+                return "mixed_or_uncertain"
+            return choice
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return "mixed_or_uncertain"

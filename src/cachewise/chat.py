@@ -4,7 +4,7 @@ import time
 
 from cachewise.assistant import Assistant, PreparedPrompt, canonical, digest
 from cachewise.cache import CacheEntry, CacheError, ExactCache, Namespace
-from cachewise.config import Settings
+from cachewise.config import LAYA_QUESTION_VERSION, Settings
 from cachewise.metrics import Metrics
 from cachewise.models import ChatRequest, ChatResponse, Usage
 from cachewise.providers import EmbeddingProvider, ProviderError
@@ -16,6 +16,19 @@ def exact_identity(prompt: PreparedPrompt, config: Settings, namespace: Namespac
         canonical(
             {
                 "schema": 1,
+                "eligibility": {
+                    "mode": config.eligibility_mode,
+                    "question_version": LAYA_QUESTION_VERSION
+                    if config.eligibility_mode == "laya"
+                    else None,
+                    "model": config.laya_model if config.eligibility_mode == "laya" else None,
+                    "revision": config.laya_model_revision
+                    if config.eligibility_mode == "laya"
+                    else None,
+                    "threshold": config.laya_min_answer_confidence
+                    if config.eligibility_mode == "laya"
+                    else None,
+                },
                 "namespace": namespace.model_dump(),
                 "prompt": prompt.serialized_prompt_hash,
                 "system_prompt": prompt.system_prompt_hash,

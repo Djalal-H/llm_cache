@@ -31,6 +31,7 @@ The project combines a FastAPI assistant, fictional ecommerce data, Redis exact 
 | Context-aware support | Resolves customer profiles, versioned policies, and customer-owned orders |
 | Exact caching | Reuses completed FAQ responses when the question and generation context match |
 | Semantic caching | Searches compatible FAQ entries by embedding similarity after an exact miss |
+| Laya eligibility | Optionally classifies FAQ cache eligibility with a self-hosted decision model |
 | Cache invalidation | Advances policy or catalogue namespaces without flushing Redis |
 | Replay experiments | Compares uncached, exact, and semantic modes on seeded traffic |
 | Answer review | Judges saved semantic hits and exports cases for manual review |
@@ -162,11 +163,43 @@ Responses include an answer, request ID, cache outcome, token usage, model, prom
 
 ### Cache boundaries
 
-The conservative router recognizes supported English FAQ wording about returns, shipping, and payments. Personal orders, charges and refunds, live stock, mixed requests, conversation history, and unrecognized wording bypass caching. Requested response language is independent and forms part of the cache identity.
+The default lexical router recognizes supported English FAQ wording about returns, shipping, and payments. Personal orders, charges and refunds, live stock, mixed requests, conversation history, and unrecognized wording bypass caching. Requested response language is independent and forms part of the cache identity.
 
 Exact identity includes the normalized question, prepared prompt, server-resolved tier and region, language, generation settings, model identity, and fixture/cache versions. Normalization preserves case, punctuation, numbers, and negation. Update `CACHEWISE_GENERATION_MODEL_REVISION` when weights or chat templates change behind the same model name.
 
 Only nonempty responses ending with `finish_reason: "stop"` are stored. Hits do not refresh the default 24-hour TTL. Redis and embedding failures preserve the generation path. Concurrent misses can generate more than once; stampede suppression is not implemented.
+
+### Optional Laya eligibility
+
+[Laya](https://nandhakishorm.github.io/laya/) is a self-hosted, Apache-2.0 decision model. Cachewise can send a normalized question to its Jev-compatible `POST /v1/systemone` endpoint and use a four-way `choice` result: `eligible`, `personalized`, `unsafe_or_live`, or `mixed_or_uncertain`. Laya is optional; the lexical router remains the default and no Laya Python dependency is installed into Cachewise.
+
+Run Laya separately on port 8002 so it does not conflict with the Cachewise API on 8000 or the example generation server on 8001:
+
+```bash
+uv venv --python 3.12 .venv-laya
+uv pip install --python .venv-laya/bin/python 'laya[serve]'
+LAYA_HOST=127.0.0.1 LAYA_PORT=8002 LAYA_DEVICE=cpu LAYA_PRELOAD=0 \
+  .venv-laya/bin/laya-serve
+```
+
+The first prediction downloads the selected public checkpoint. For NVIDIA GPU serving, install a compatible CUDA-enabled PyTorch build in `.venv-laya` using [PyTorch's installation selector](https://pytorch.org/get-started/locally/) before installing Laya, verify `torch.cuda.is_available()`, and set `LAYA_DEVICE=cuda`. The vLLM example also uses the GPU, so check available VRAM if both servers run together. See [Laya's server documentation](https://github.com/NandhaKishorM/laya#self-hosting-http-server-jev-compatible) for preload, authentication, and deployment settings.
+
+After starting Laya, use an evaluated threshold and enable the provider in `.env`:
+
+```dotenv
+CACHEWISE_CACHE_MODE=exact
+CACHEWISE_ELIGIBILITY_MODE=laya
+CACHEWISE_LAYA_BASE_URL=http://127.0.0.1:8002
+CACHEWISE_LAYA_MODEL=english
+CACHEWISE_LAYA_MIN_ANSWER_CONFIDENCE=0.95
+CACHEWISE_LAYA_TIMEOUT_SECONDS=5
+```
+
+`0.95` is an illustration, not an approved threshold. Compare Laya's decisions with reviewed FAQ, personalized, mixed, and adversarial requests on the tuning split, then validate the selected threshold on held-out traffic before using its `eligible` decisions for shared caching. Laya's shipped checkpoints can be overconfident; `answer_confidence` is the probability assigned to the selected label, while `confidence` measures how concentrated the full distribution is. Cachewise gates on `answer_confidence`. [Laya calibration guidance](https://github.com/NandhaKishorM/laya#automated-confidence-gating)
+
+History, obvious personal/live requests, long or multi-intent wording, and instruction-manipulation patterns still bypass before a Laya call. A non-`eligible` choice, low `answer_confidence`, malformed response, timeout, or unavailable Laya service bypasses the cache and proceeds through normal generation. The current hard filters are English-oriented. Laya mode supports `disabled` and `exact` cache modes; semantic mode remains unavailable with Laya until its English keyword safety guards are evaluated for the additional wording and languages Laya may admit.
+
+Set `CACHEWISE_LAYA_API_KEY` if the Laya server requires a bearer token. `CACHEWISE_LAYA_MODEL_REVISION` is operator-supplied cache identity metadata: change it when the checkpoint behind an alias changes. Cachewise does not pin the model on the Laya server. Eligibility mode, model, revision, question-schema version, and threshold are recorded in replay configuration and separated in exact-cache identities. Restart the API after changing settings, and set the same values for the replay runner.
 
 ### Exact mode
 
@@ -352,7 +385,7 @@ src/cachewise/
 ├── chat.py             # Cache routing and generation
 ├── cache.py            # Exact Redis cache and invalidation
 ├── semantic.py         # Embeddings and vector lookup
-├── eligibility.py      # Conservative FAQ routing
+├── eligibility.py      # Lexical and optional Laya FAQ routing
 ├── providers.py        # Generation, embedding, and judge adapters
 ├── dataset.py          # Seeded replay traffic
 ├── replay.py           # Sequential replay and exports

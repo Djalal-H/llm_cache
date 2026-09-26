@@ -58,7 +58,7 @@ class Assistant:
         self.fixtures = fixtures
         self.generation = generation
 
-    def prepare(self, request: ChatRequest) -> PreparedPrompt:
+    def prepare(self, request: ChatRequest, eligibility: str | None = None) -> PreparedPrompt:
         snapshot = self.fixtures.snapshot()
         customer = snapshot.customer(request.customer_id)
         system = INSTRUCTIONS + canonical(
@@ -68,7 +68,7 @@ class Assistant:
                 "policies": snapshot.prompt_policies(customer),
             }
         )
-        eligibility = eligibility_reason(request)
+        eligibility = eligibility if eligibility is not None else eligibility_reason(request)
         if eligibility == "eligible":
             context = canonical(
                 {

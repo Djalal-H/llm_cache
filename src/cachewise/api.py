@@ -13,6 +13,7 @@ from cachewise.assistant import Assistant
 from cachewise.cache import CacheError, ExactCache, RedisExactCache
 from cachewise.chat import ChatService
 from cachewise.config import Settings
+from cachewise.eligibility import EligibilityProvider, LayaEligibility, eligibility_reason
 from cachewise.fixtures import FixtureService
 from cachewise.metrics import Metrics
 from cachewise.models import ChatRequest, ChatResponse, InvalidateRequest
@@ -27,7 +28,7 @@ from cachewise.providers import (
 from cachewise.semantic import RedisSemanticCache, SemanticCache
 
 
-def get_assistant(request: Request) -> Assistant:
+async def get_assistant(request: Request) -> Assistant:
     return request.app.state.assistant
 
 
@@ -37,6 +38,7 @@ def create_app(
     cache: ExactCache | None = None,
     embedding: EmbeddingProvider | None = None,
     semantic: SemanticCache | None = None,
+    eligibility_provider: EligibilityProvider | None = None,
 ) -> FastAPI:
     config = settings or Settings()
     fixtures = FixtureService(config.fixture_path)
@@ -56,6 +58,13 @@ def create_app(
                 max_tokens=config.max_tokens,
             )
             app.state.assistant = Assistant(fixtures, provider)
+            app.state.eligibility_provider = (
+                eligibility_provider
+                if eligibility_provider is not None
+                else LayaEligibility(client, config)
+                if config.eligibility_mode == "laya"
+                else None
+            )
             active_cache = cache
             if active_cache is None and config.cache_mode != "disabled":
                 active_cache = RedisExactCache(
@@ -132,7 +141,11 @@ def create_app(
         body: ChatRequest, request: Request, assistant: Annotated[Assistant, Depends(get_assistant)]
     ):
         try:
-            prepared = assistant.prepare(body)
+            router = request.app.state.eligibility_provider
+            eligibility = (
+                await router.reason(body) if router is not None else eligibility_reason(body)
+            )
+            prepared = assistant.prepare(body, eligibility)
         except KeyError:
             return JSONResponse(
                 status_code=404,

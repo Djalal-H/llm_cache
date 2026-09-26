@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+LAYA_QUESTION_VERSION = 1
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CACHEWISE_", env_file=".env", extra="ignore")
@@ -13,6 +15,13 @@ class Settings(BaseSettings):
     generation_model: str = "cachewise-model"
     generation_model_revision: str | None = None
     cache_mode: Literal["disabled", "exact", "semantic"] = "disabled"
+    eligibility_mode: Literal["lexical", "laya"] = "lexical"
+    laya_base_url: str | None = None
+    laya_model: Literal["english", "multilingual", "typed-decisions"] = "english"
+    laya_model_revision: str | None = None
+    laya_api_key: SecretStr = SecretStr("")
+    laya_timeout_seconds: float = 5
+    laya_min_answer_confidence: float | None = None
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
     cache_ttl_seconds: int = 86400
     cache_timeout_seconds: float = 1
@@ -42,13 +51,19 @@ class Settings(BaseSettings):
         "judge_model",
         "generation_model_revision",
         "embedding_model_revision",
+        "laya_base_url",
+        "laya_model_revision",
     )
     @classmethod
     def blank_optional(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
 
     @field_validator(
-        "generation_base_url", "embedding_base_url", "judge_base_url", "vllm_metrics_url"
+        "generation_base_url",
+        "embedding_base_url",
+        "judge_base_url",
+        "laya_base_url",
+        "vllm_metrics_url",
     )
     @classmethod
     def http_url(cls, value: str | None) -> str | None:
@@ -85,6 +100,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "semantic mode requires embedding endpoint, model, dimension and threshold"
             )
+        if self.eligibility_mode == "laya":
+            if self.laya_base_url is None or self.laya_min_answer_confidence is None:
+                raise ValueError("Laya mode requires base URL and an explicit confidence threshold")
+            if self.cache_mode == "semantic":
+                raise ValueError("Laya eligibility is limited to disabled or exact cache mode")
+        if self.laya_min_answer_confidence is not None and not (
+            0 < self.laya_min_answer_confidence <= 1
+        ):
+            raise ValueError("Laya confidence threshold must be in (0, 1]")
+        if not 0 < self.laya_timeout_seconds <= 60:
+            raise ValueError("Laya timeout must be in (0, 60]")
         if not 1 <= self.cache_ttl_seconds <= 604800:
             raise ValueError("cache TTL must be between one second and seven days")
         if not 0 < self.cache_timeout_seconds <= 10:
@@ -120,6 +146,17 @@ class Settings(BaseSettings):
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "application_cache": self.cache_mode,
+            "eligibility_mode": self.eligibility_mode,
+            "laya_model": self.laya_model if self.eligibility_mode == "laya" else None,
+            "laya_model_revision": self.laya_model_revision
+            if self.eligibility_mode == "laya"
+            else None,
+            "laya_question_version": LAYA_QUESTION_VERSION
+            if self.eligibility_mode == "laya"
+            else None,
+            "laya_min_answer_confidence": self.laya_min_answer_confidence
+            if self.eligibility_mode == "laya"
+            else None,
             "cache_ttl_seconds": self.cache_ttl_seconds,
             "cache_timeout_seconds": self.cache_timeout_seconds,
             "generation_model_revision": self.generation_model_revision,

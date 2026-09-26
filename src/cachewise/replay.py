@@ -12,6 +12,7 @@ import httpx
 from cachewise.assistant import Assistant
 from cachewise.config import Settings
 from cachewise.dataset import DatasetRequest, dataset_hash
+from cachewise.eligibility import LayaEligibility
 from cachewise.fixtures import FixtureService
 from cachewise.metrics import percentile
 from cachewise.models import ChatResponse, Usage
@@ -207,6 +208,9 @@ async def _replay(
     save_manifest()
     results = []
     assistant = Assistant(FixtureService(settings.fixture_path), None)
+    eligibility_provider = (
+        LayaEligibility(client, settings) if settings.eligibility_mode == "laya" else None
+    )
     with (output / "requests.jsonl").open("w", encoding="utf-8") as stream:
         for index, row in enumerate(rows):
             record = {
@@ -217,7 +221,12 @@ async def _replay(
                 "error": None,
                 "started_at": datetime.now(UTC).isoformat(),
             }
-            prepared = assistant.prepare(row.request)
+            eligibility = (
+                await eligibility_provider.reason(row.request)
+                if eligibility_provider is not None
+                else None
+            )
+            prepared = assistant.prepare(row.request, eligibility)
             record["judge_requirements"] = {
                 "expected_answer": row.answer_requirements,
                 "context_messages": [m.model_dump() for m in prepared.messages[:-1]],
