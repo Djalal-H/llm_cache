@@ -313,7 +313,7 @@ uv run --frozen cachewise compare \
   --output artifacts/tuning-comparison
 ```
 
-Comparison rejects failed runs or mismatched traffic, generation settings, serving metadata, and warm-up counts. Negative deltas mean fewer tokens/calls or lower latency than the uncached baseline. Prefix warm-state equivalence remains unverified.
+Comparison rejects failed runs or mismatched traffic, generation settings, serving metadata, and warm-up counts. Negative deltas mean fewer tokens/calls or lower latency than the uncached baseline.
 
 ### Review semantic hits
 
