@@ -22,7 +22,7 @@ Repeated support questions are a useful setting for exploring LLM caching: some 
 
 The project combines a FastAPI assistant, fictional ecommerce data, Redis exact and semantic caches, reproducible replay traffic, and a read-only Streamlit dashboard. Generation, embedding, and judge providers are configured independently through OpenAI-compatible endpoints.
 
-> **Status:** The assistant, cache modes, replay comparison, saved-hit judging, and dashboard are implemented. Semantic threshold approval and the final held-out quality gate are still pending. Caching is disabled by default; no validated speedup or dollar-savings claim is made.
+> **Status:** The assistant, cache modes, replay comparison, saved-hit judging, and dashboard are implemented. Semantic threshold approval and the final held-out quality gate are still pending. Caching is disabled by default.
 
 ## What you can explore
 
@@ -335,7 +335,7 @@ The manual-review queue contains up to 50 cases, prioritizing failures and low s
 | Comparison | `comparison.csv`, `report.md`, `manifests.json` |
 | Judging | `judgments.jsonl`, `summary.json`, `manual-review.csv`, `report.md` |
 
-Failed requests remain in exports, and replay exits nonzero if a measured request fails. Per-request prefix evidence comes only from provider-reported cached prompt tokens; engine snapshots cannot identify individual hits. Dollar savings remain unavailable without a serving-cost model.
+Failed requests remain in exports, and replay exits nonzero if a measured request fails. Per-request prefix evidence comes only from provider-reported cached prompt tokens; engine snapshots cannot identify individual hits.
 
 ## Docker
 
